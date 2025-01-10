@@ -34,7 +34,27 @@ FILE_FORMAT = (TYPE = CSV);
 
 LS @BLAZEJ_DEV.INGEST.MY_INTERNAL_STAGE;
 // User Stage - Internal stage specjalnego przeznaczenia, każdy użytkownik posiada swój
+// Działa podobnie jak Internal Stage - ale ma do niego dostep tylko uzytkownik.
+// Nie mogą zostać usuniete ani zmienione
+// Oznaczane za pomocą tyldy
+LS @~;
+
 // Table Stage - Każda tabela "pod spodem" posiada swój STAGE, uzyteczne jezeli chcemy szybko ladowac dane
+CREATE OR REPLACE TABLE BLAZEJ_DEV.INGEST.TABLE_WITH_STAGE(
+    ID NUMBER,
+    MSG TEXT
+);
+
+// Dostęp znak '%' przed nazwą tabeli
+LS @BLAZEJ_DEV.INGEST.%TABLE_WITH_STAGE;
+
+COPY INTO @BLAZEJ_DEV.INGEST.%TABLE_WITH_STAGE FROM
+(SELECT 1 AS ID, 'test' AS MSG)
+FILE_FORMAT = (TYPE = CSV);
+
+LS @BLAZEJ_DEV.INGEST.%TABLE_WITH_STAGE;
+
+
 // External Stage - Stanowi "okno" do zewnetrznej chmury (AWS/GCP/Azure) by umozliwic interakcje z plikami - najczesciej spotykany (Przynajmniej u nas ;) ) w praktyce.
 //  https://docs.snowflake.com/en/user-guide/data-load-local-file-system
 //  https://docs.snowflake.com/en/user-guide/data-load-s3
@@ -43,7 +63,21 @@ LS @BLAZEJ_DEV.INGEST.MY_INTERNAL_STAGE;
 
 
 // https://docs.snowflake.com/en/sql-reference/sql/create-storage-integration
+// https://docs.snowflake.com/en/user-guide/data-load-s3-config
+//     https://docs.snowflake.com/en/user-guide/data-load-s3-config-storage-integration
+// https://docs.snowflake.com/en/user-guide/data-load-gcs-config
+//https://docs.snowflake.com/en/user-guide/data-load-azure
+USE ROLE ACCOUNTADMIN;
+// Wstępnie tylko ACCOUNTADMIN ma prawo do tworzenia integracji!!!
+CREATE OR REPLACE STORAGE INTEGRATION EXAMPLE_AWS_INTEGRATION
+    TYPE = EXTERNAL_STAGE // Jedyny dostepny typ
+    ENABLED = FALSE // Nie dziala dopoki nie wykonamy komendy ALTER
+    STORAGE_ALLOWED_LOCATIONS = ('s3://some-bucket') // Lista lokacji do których możemy się autoryzować integracją
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/dummy-role' // Rola AWS IAM, po naszej stronie przez którą Integracja będzie się autoryzować w AWS
+    STORAGE_PROVIDER = 'S3';
 
+DESC INTEGRATION EXAMPLE_AWS_INTEGRATION;
+    
 
 // https://docs.snowflake.com/en/user-guide/data-load-s3-create-stage
 // Obiekt typu Stage, mozemy przegladac otwarte zbiory danych od Snowflake, udostepniane w ramach tutorial quickstart
@@ -372,7 +406,28 @@ DESC TABLE BLAZEJ_DEV.INGEST.TB_MENU;
 SELECT PARSE_JSON(MENU_ITEM_HEALTH_METRICS_OBJ) FROM BLAZEJ_DEV.INGEST.TB_MENU LIMIT 10;
 //Bezpieczna wersja to TRY_PARSE_JSON
 
-WITH (
-    SELECT PARSE_JSON(MENU_ITEM_HEALTH_METRICS_OBJ) AS VARIANT_MENU_ITEM_HEALTH_METRICS
-    FROM BLAZEJ_DEV.INGEST.TB_MENU
-) AS tab
+// Przyklad eksplodowania JSON za pomocą funkcji FLATTEN
+CREATE OR REPLACE TABLE HEALTH_METRIX_EXPLODED 
+AS
+SELECT SEQ, KEY, PATH, INDEX, VALUE, THIS 
+FROM BLAZEJ_DEV.INGEST.TB_MENU menu,
+TABLE(FLATTEN(
+    INPUT => PARSE_JSON(menu.MENU_ITEM_HEALTH_METRICS_OBJ)
+));
+
+SELECT * FROM BLAZEJ_DEV.INGEST.HEALTH_METRIX_EXPLODED LIMIT 10;
+
+// Przykład lineage'u
+
+CREATE SCHEMA BLAZEJ_DEV.TRANSFORMED;
+CREATE OR REPLACE TABLE BLAZEJ_DEV.TRANSFORMED.TB_CUSTOMER_AGE (CUSTOMER_ID NUMBER, AGE NUMBER)
+AS
+SELECT CUSTOMER_ID, POSTAL_CODE, DATEDIFF('year', CURRENT_DATE(), BIRTHDAY_DATE) AS AGE
+FROM BLAZEJ_DEV.INGEST.TB_CUSTOMERS;
+
+CREATE OR REPLACE TABLE BLAZEJ_DEV.TRANSFORMED.TB_AVG_AGE_PER_CODE ( POSTAL_CODE TEXT, AVG_AGE NUMBER)
+AS
+SELECT POSTAL_CODE, AVG(AGE) AS AVG_AGE FROM BLAZEJ_DEV.TRANSFORMED.TB_CUSTOMER_AGE cust_age
+INNER JOIN BLAZEJ_DEV.INGEST.TB_CUSTOMERS cust ON cust_age.customer_id = cust.customer_id
+GROUP BY POSTAL_CODE;
+
