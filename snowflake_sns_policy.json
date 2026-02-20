@@ -1,0 +1,28 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "1",
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": "arn:aws:iam::473991839816:user/l0zc1000-s"
+        },
+        "Action": "sns:Subscribe",
+        "Resource": "arn:aws:sns:eu-north-1:285560394758:new-transaction-cdc-notification"
+      },
+      {
+        "Sid": "s3-event-notifier",
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "s3.amazonaws.com"
+        },
+        "Action": "SNS:Publish",
+        "Resource": "arn:aws:sns:eu-north-1:285560394758:new-transaction-cdc-notification",
+        "Condition": {
+          "ArnLike": {
+            "aws:SourceArn": "arn:aws:s3:::285560394758-my-test-s3"
+          }
+        }
+      }
+    ]
+  }
