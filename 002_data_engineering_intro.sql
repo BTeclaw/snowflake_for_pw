@@ -72,20 +72,11 @@ USE ROLE ACCOUNTADMIN;
 CREATE OR REPLACE STORAGE INTEGRATION EXAMPLE_AWS_INTEGRATION
     TYPE = EXTERNAL_STAGE -- Jedyny dostepny typ
     ENABLED = FALSE -- Nie dziala dopoki nie wykonamy komendy ALTER
-    STORAGE_ALLOWED_LOCATIONS = ('s3:--some-bucket') -- Lista lokacji do których możemy się autoryzować integracją
+    STORAGE_ALLOWED_LOCATIONS = ('s3://some-bucket') -- Lista lokacji do których możemy się autoryzować integracją
     STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/dummy-role' -- Rola AWS IAM, po naszej stronie przez którą Integracja będzie się autoryzować w AWS
     STORAGE_PROVIDER = 'S3';
 DESC INTEGRATION EXAMPLE_AWS_INTEGRATION;
     
-CREATE STORAGE INTEGRATION MY_TRIAL_INTEGRATION
-  TYPE = EXTERNAL_STAGE
-  STORAGE_PROVIDER = 'S3'
-  ENABLED = TRUE
-  STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::285560394758:role/pw-snowflake-trial-role'
-  STORAGE_ALLOWED_LOCATIONS = ('*');
-
-DESC INTEGRATION MY_TRIAL_INTEGRATION;
-
     
 
 -- https://docs.snowflake.com/en/user-guide/data-load-s3-create-stage
@@ -447,8 +438,72 @@ GROUP BY cust.POSTAL_CODE;
     - Czym jest Snowpipe
     - Jak zautomatyzowac Snowpipe przy pomocy SNS - event driven ingestion
     - Jak zautomatyzowac External Table przy pomocy SNS
+    - Dynamic Table 
 */
 
+USE ROLE ACCOUNTADMIN;
+CREATE STORAGE INTEGRATION MY_TRIAL_INTEGRATION
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = 'S3'
+  ENABLED = TRUE
+  STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::285560394758:role/pw-snowflake-trial-role'
+  STORAGE_ALLOWED_LOCATIONS = ('*');
+GRANT USAGE ON INTEGRATION MY_TRIAL_INTEGRATION TO ROLE BLAZEJ__ADMIN;
+DESC INTEGRATION MY_TRIAL_INTEGRATION;
 
+
+
+USE ROLE BLAZEJ__ADMIN;
+CREATE STAGE BLAZEJ_DB.STAGE.LANDING_BUCKET
+    URL = 's3://285560394758-my-test-s3'
+    STORAGE_INTEGRATION = MY_TRIAL_INTEGRATION
+    FILE_FORMAT = (TYPE = CSV);
+
+LS @BLAZEJ_DB.STAGE.LANDING_BUCKET;
+
+
+-- Wladujmy na S3 pliki CSV z rekordami CDC (Change Data Capture)
+-- Batche od 0001 do 0005
+
+LS @BLAZEJ_DB.STAGE.LANDING_BUCKET;
+
+-- Stworzmy tabele docelowa do ktorej bedzeimy ladowac rekordy CDC
+CREATE OR REPLACE TABLE BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW (
+    OP VARCHAR(1),
+    ID INTEGER,
+    TYPE TEXT,
+    STATE TEXT,
+    CURRENCY TEXT,
+    AMOUNT INTEGER,
+    TRANSACTION_CREATED_TIMESTAMP TIMESTAMP_NTZ,
+    last_change TIMESTAMP_NTZ
+);
+-- Stworzmy format pliku - dobra praktyka
+CREATE FILE FORMAT BLAZEJ_DB.STAGE.CSV_CDC_FF
+    TYPE = CSV
+    PARSE_HEADER = TRUE;
+
+COPY INTO BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW 
+FROM @BLAZEJ_DB.STAGE.LANDING_BUCKET/cdc/transaction
+FILE_FORMAT = BLAZEJ_DB.STAGE.CSV_CDC_FF
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+
+select * from BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW;
+
+
+/*
+    W tym przypadku normalnie moglibysmy postawic
+    Snowflake TASK: https://docs.snowflake.com/en/sql-reference/sql/create-task
+    Jednakże Taski sa bardziej CRONowe, czyli maja swoj kalendarz wykonywania.
+    (To nie zawsze jest najgorsze - nie zawsze potrzebny jest Real-Time, bo jest bardzo drogi w niektorych przypadkach ;) )
+    Co w przypadku gdy chcielibysmy miec dane najszybciej jak to mozliwe?
+    Zacznijmy od tego czym jest SnowPipe: https://docs.snowflake.com/en/user-guide/data-load-snowpipe-intro
+    W skrocie Snowpipe enkapsuluje COPY INTO:
+    - Staje sie on obiektem jak kazdy inny
+    - oferuje monitoring, alerting
+    - Od grudnia 2025 jest BARDZO TANI!
+*/
+
+-- Stworzmy na razie 'manualny' Snowpipe
 
 
