@@ -501,9 +501,67 @@ select * from BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW;
     W skrocie Snowpipe enkapsuluje COPY INTO:
     - Staje sie on obiektem jak kazdy inny
     - oferuje monitoring, alerting
+    - Jest usluga serverless (nie musimy uzywac Virtual Warehouse)
     - Od grudnia 2025 jest BARDZO TANI!
 */
 
 -- Stworzmy na razie 'manualny' Snowpipe
 
 
+CREATE PIPE BLAZEJ_DB.STAGE.TRANSACTION_CDC_PIPE
+AS
+COPY INTO BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW 
+FROM @BLAZEJ_DB.STAGE.LANDING_BUCKET/cdc/transaction
+FILE_FORMAT = BLAZEJ_DB.STAGE.CSV_CDC_FF
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+
+-- Ladowanie plikow odpalamy za pomoca
+ALTER PIPE BLAZEJ_DB.STAGE.TRANSACTION_CDC_PIPE REFRESH;
+
+-- Doladujmy kolejne 2 pliki 0006-0007
+ALTER PIPE BLAZEJ_DB.STAGE.TRANSACTION_CDC_PIPE REFRESH;
+-- Spojrzmy sobie w katalogu jak to wyglada
+
+-- Powinno byc 700 wierszy
+select * from BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW ORDER BY LAST_CHANGE DESC;
+
+/*
+    Czas przejsc do bardziej zaawansowanej rzeczy.
+    A mianowicie jak sprawic zeby nasz Snowpipe ZAWSZE automatycznie wyzwalal sie
+    jak tylko wykryje ze pojawil sie nowy plik. W tym celu potrzebujemy na AWS:
+    - Topic SNS ktory bedzie wysylal notyfikacje jak tylko w S3 pojawi sie plik
+    - Ustawic S3 aby, jak tylko pojawi sie plik w cdc/transactions pchal notyfikacje do SNS
+    - Zasubskrybowac Snowpipe przez jego ponowne utworzenie
+*/
+
+-- odpytujemy Snowflake o polityke dla SNS zebysmy mogli go zasubskrybwoac
+select system$get_aws_sns_iam_policy('arn:aws:sns:eu-north-1:285560394758:new-transaction-cdc-notification');
+
+-- Tworzymy ponownie Snowpipoe z AutoLoad i podpietym SNS
+CREATE OR REPLACE PIPE BLAZEJ_DB.STAGE.TRANSACTION_CDC_PIPE
+    AUTO_INGEST = TRUE
+    AWS_SNS_TOPIC = 'arn:aws:sns:eu-north-1:285560394758:new-transaction-cdc-notification'
+AS
+COPY INTO BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW 
+FROM @BLAZEJ_DB.STAGE.LANDING_BUCKET/cdc/transaction
+FILE_FORMAT = BLAZEJ_DB.STAGE.CSV_CDC_FF
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+
+-- Sprawdzmy czy zasubskrybowal w AWS
+-- Zaladujmy pliki od 0008 do 0009 - powinnismy byc skolejkowane i zaladowane automatycznie
+
+-- powinno byc 900 wierszy
+select * from BLAZEJ_DB.STAGE.TRANSACTION_CDC_RAW ORDER BY LAST_CHANGE DESC;
+
+/*
+    W ten sposob mamy Event-Driven ingestion!
+    Na pewno sa lepsze sposoby zeby osiagnac wiekszy real-time:
+    - podpiecie strumienia CDC do AWS Kinesis zamiast odkladania w plikach
+    - Wykorzystanie Snowpipe Streaming
+    Ale zeby nie spedzic kolejnych godzin na ustawianiu wspomnianej infrastruktury - przejdzmy do Dynamic Tables.
+    Dynamic Tables to tabele ktore niejako moga zastapic nam budowanie modeli danych. 
+    Klasycznie zeby skonstruowac Inkrementalny load na tabeli w Snowflake, najlepiej bylo postawic obiekt typu Stream, i Taska z MERGE INTO.
+    Dynamic Tables nam to zastepuja i do tego umozliwaja ustawienie kalendarza odswiezen.
+
+    W skrocie mozemy powiedziec ze Dynamic Tables to po prostu zmaterializowane kwerendy, ktorymi zarzadza Snowflake i stara sie sprawic by byly inkrementalne.
+*/
